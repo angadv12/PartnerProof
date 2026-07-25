@@ -60,6 +60,7 @@ npm start
 | `npm run lint` | Run ESLint |
 | `npm run seed` / `npm run reset` | Reset the local data store to the seed dataset |
 | `npm run smoke:agent` | End-to-end agent-runtime test against a stub model (no API key needed) |
+| `npm run context:budget` | Per-workflow context cost, for sizing a local model |
 
 > **Reset during a demo:** click around, change statuses, add evidence — then run
 > `npm run reset` (or `POST /api/reset`) to restore the pristine seed data.
@@ -95,11 +96,34 @@ ANTHROPIC_API_KEY=sk-ant-...
 `/agents` runs autonomous, tool-calling agents over live platform data. An agent picks its
 own tools, calls them in a loop, and answers from what it actually retrieved.
 
-**Three providers, one interface.** `src/lib/agents/providers/` adapts Anthropic (Messages
-API), OpenAI (Chat Completions), and any local OpenAI-compatible server — Ollama, LM Studio,
-vLLM — to a single `LLMProvider` contract. Nothing above that directory imports a vendor SDK,
-so a run can switch providers by changing one dropdown. Unconfigured providers surface in the
-UI as disabled with the reason, instead of failing mid-run.
+**Five providers, one interface.** Everything above `src/lib/agents/providers/` speaks a
+single `LLMProvider` contract and never imports a vendor SDK, so switching providers is a
+dropdown change.
+
+| Provider | Configure with | Notes |
+|----------|---------------|-------|
+| **Anthropic** | `ANTHROPIC_API_KEY` | Messages API — its own adapter |
+| **OpenAI** | `OPENAI_API_KEY` | Chat Completions |
+| **Google Gemini** | `GEMINI_API_KEY` | Free daily quota, no subscription needed |
+| **Local model** | `LOCAL_MODEL_BASE_URL` | LM Studio, Ollama, vLLM, llama.cpp |
+| **Custom endpoint** | `CUSTOM_BASE_URL` | Groq, Together, OpenRouter, Fireworks, … |
+
+Only Anthropic needs its own adapter. The other four all speak Chat Completions, so they
+share one implementation and differ purely by an entry in `providers/catalog.ts` —
+credentials, endpoint, and model catalog. Each still appears as its own picker in the UI
+with its own models and configuration hint. Adding a vendor is one table entry plus its id
+in `ProviderId`; `buildRegistry()` throws at import if you add one without the other.
+
+Unconfigured providers render disabled with the reason rather than failing mid-run, and an
+explicitly requested provider that isn't configured is a hard error — silently running on a
+different model would make results impossible to interpret.
+
+> **Gemini is the cheapest hosted option.** The API has a real free tier — no card, no
+> expiration — with a meaningful daily request quota, independent of any Google
+> subscription. Two caveats: enabling billing on a Google Cloud project *removes* the free
+> tier for that project, and free-tier prompts may be used for model training. Use a paid
+> project or Vertex for anything beyond evaluation, since this platform handles real
+> contract terms.
 
 **One system prompt, injected everywhere.** `src/lib/agents/system-prompt.ts` holds the
 platform preamble — domain context, grounding rules, output style, and boundaries. The
@@ -204,7 +228,9 @@ src/
       workflows.ts               # named agent configurations
       request.ts                 # HTTP request validation
       store.ts                   # run persistence
-      providers/                 # anthropic · openai · local (+ shared adapter)
+      providers/                 # anthropic.ts (own protocol)
+                                 #   + openai-compatible.ts (shared transport)
+                                 #   + catalog.ts (openai · gemini · local · custom)
       tools/                     # domain tools over the service layer
     storage/                     # Storage interface · s3 · local disk
 scripts/

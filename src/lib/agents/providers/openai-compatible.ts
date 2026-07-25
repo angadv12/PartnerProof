@@ -15,7 +15,9 @@ import type {
   AgentMessage,
   CompletionRequest,
   CompletionResponse,
+  LLMProvider,
   ModelInfo,
+  ProviderId,
   StopReason,
   ToolCall,
 } from "../types";
@@ -174,4 +176,103 @@ export async function completeViaChatCompletions(
 
 export function modelInfo(id: string, label: string, contextWindow?: number): ModelInfo {
   return { id, label, contextWindow };
+}
+
+// ---------------------------------------------------------------------------
+// Generic provider
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything that distinguishes one OpenAI-compatible vendor from another.
+ *
+ * OpenAI, Gemini, and self-hosted servers all speak the same wire protocol, so
+ * they differ only in credentials, base URL, and catalog. Keeping that as data
+ * means a new vendor is a table entry, not a class — and each one still appears
+ * as its own provider in the UI, because the registry lists specs individually.
+ */
+export interface OpenAICompatibleSpec {
+  id: ProviderId;
+  label: string;
+  /** Env var holding the API key. */
+  apiKeyEnv: string;
+  /** Env var overriding the base URL. */
+  baseUrlEnv: string;
+  /** Fixed endpoint for vendors that have one. Omit to use the SDK default. */
+  defaultBaseUrl?: string;
+  /** Self-hosted vendors are unusable without a URL; hosted ones need a key. */
+  requiresBaseUrl?: boolean;
+  /** Sent when the server ignores auth but the SDK still demands a non-empty key. */
+  placeholderApiKey?: string;
+  modelEnv: string;
+  /** Env var with a comma-separated catalog, for operator-defined model lists. */
+  modelsEnv?: string;
+  defaultModel: string;
+  /** Published catalog. Empty for vendors whose models the operator names. */
+  models: ModelInfo[];
+  tokenLimitField?: "max_completion_tokens" | "max_tokens";
+  timeoutMs?: number;
+  /** Shown in the UI when the provider is unconfigured. */
+  hint: string;
+}
+
+export class OpenAICompatibleProvider implements LLMProvider {
+  readonly id: ProviderId;
+  readonly label: string;
+
+  constructor(private readonly spec: OpenAICompatibleSpec) {
+    this.id = spec.id;
+    this.label = spec.label;
+  }
+
+  private baseUrl(): string | undefined {
+    return process.env[this.spec.baseUrlEnv] || this.spec.defaultBaseUrl;
+  }
+
+  private apiKey(): string | undefined {
+    return process.env[this.spec.apiKeyEnv] || this.spec.placeholderApiKey;
+  }
+
+  isConfigured(): boolean {
+    return this.spec.requiresBaseUrl ? Boolean(this.baseUrl()) : Boolean(this.apiKey());
+  }
+
+  configurationHint(): string {
+    return this.spec.hint;
+  }
+
+  listModels(): ModelInfo[] {
+    const configured = (process.env[this.spec.modelsEnv ?? ""] ?? "")
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
+    if (configured.length > 0) {
+      // Operator-named models have no display name to look up.
+      return configured.map((id) => ({ id, label: id }));
+    }
+    if (this.spec.models.length > 0) return this.spec.models;
+    const fallback = this.defaultModel();
+    return [{ id: fallback, label: fallback }];
+  }
+
+  defaultModel(): string {
+    return process.env[this.spec.modelEnv] || this.spec.defaultModel;
+  }
+
+  async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    const apiKey = this.apiKey();
+    const baseURL = this.baseUrl();
+    if (!this.isConfigured() || !apiKey) {
+      throw new Error(this.spec.hint);
+    }
+
+    return completeViaChatCompletions(
+      {
+        apiKey,
+        baseURL,
+        tokenLimitField: this.spec.tokenLimitField,
+        timeoutMs: this.spec.timeoutMs,
+      },
+      { ...request, model: request.model || this.defaultModel() },
+    );
+  }
 }

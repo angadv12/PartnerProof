@@ -10,9 +10,10 @@
 // Providers & models
 // ---------------------------------------------------------------------------
 
-export type ProviderId = "anthropic" | "openai" | "local";
+export type ProviderId = "anthropic" | "openai" | "gemini" | "local" | "custom";
 
-export const PROVIDER_IDS: ProviderId[] = ["anthropic", "openai", "local"];
+/** Display order in the UI's provider picker. */
+export const PROVIDER_IDS: ProviderId[] = ["anthropic", "openai", "gemini", "local", "custom"];
 
 export function isProviderId(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDER_IDS as string[]).includes(value);

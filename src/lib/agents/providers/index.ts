@@ -1,21 +1,40 @@
 /**
  * Provider registry.
  *
+ * Two shapes live here. Anthropic has its own adapter because the Messages API
+ * is a different protocol. Everything else — OpenAI, Gemini, self-hosted, and
+ * any other gateway — speaks Chat Completions, so they share one implementation
+ * and differ only by a catalog entry.
+ *
  * Providers are constructed once and read their credentials lazily, so adding a
  * key to the environment takes effect without changing this module. Nothing
  * outside this directory imports a vendor SDK.
  */
 import { AnthropicProvider } from "./anthropic";
-import { LocalProvider } from "./local";
-import { OpenAIProvider } from "./openai";
+import { OPENAI_COMPATIBLE_SPECS } from "./catalog";
+import { OpenAICompatibleProvider } from "./openai-compatible";
 import type { LLMProvider, ProviderId, ProviderInfo } from "../types";
 import { PROVIDER_IDS, isProviderId } from "../types";
 
-const REGISTRY: Record<ProviderId, LLMProvider> = {
-  anthropic: new AnthropicProvider(),
-  openai: new OpenAIProvider(),
-  local: new LocalProvider(),
-};
+function buildRegistry(): Record<ProviderId, LLMProvider> {
+  const registry: Partial<Record<ProviderId, LLMProvider>> = {
+    anthropic: new AnthropicProvider(),
+  };
+  for (const spec of OPENAI_COMPATIBLE_SPECS) {
+    registry[spec.id] = new OpenAICompatibleProvider(spec);
+  }
+
+  // Adding an id to ProviderId without a catalog entry would otherwise surface
+  // as an undefined lookup deep in a run. Fail at import instead.
+  const missing = PROVIDER_IDS.filter((id) => !registry[id]);
+  if (missing.length > 0) {
+    throw new Error(`Provider(s) declared but not registered: ${missing.join(", ")}`);
+  }
+
+  return registry as Record<ProviderId, LLMProvider>;
+}
+
+const REGISTRY = buildRegistry();
 
 export function getProvider(id: ProviderId): LLMProvider {
   return REGISTRY[id];
@@ -65,7 +84,7 @@ export function resolveProvider(requested?: ProviderId): LLMProvider {
   const available = listProviders().find((p) => p.isConfigured());
   if (!available) {
     throw new Error(
-      "No LLM provider is configured. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or LOCAL_MODEL_BASE_URL.",
+      "No LLM provider is configured. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, LOCAL_MODEL_BASE_URL, or CUSTOM_BASE_URL.",
     );
   }
   return available;
