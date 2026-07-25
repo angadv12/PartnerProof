@@ -459,6 +459,19 @@ async function checkStorageGuards() {
     );
   }
 
+  // Omitting the ordinal with several files attached must be an error, not a
+  // silent read of the first — analyzing the wrong contract looks like success.
+  await assert.rejects(
+    () => readAttachment.handler({}, ctx),
+    /required when several files are attached/,
+    "an ambiguous read must be rejected",
+  );
+
+  // With exactly one attachment, omitting it is unambiguous and still allowed.
+  const single = { runId: "smoke", attachments: [ctx.attachments[1]] };
+  const only = (await readAttachment.handler({}, single)) as { fileName: string };
+  assert.strictEqual(only.fileName, "contract.txt", "a lone attachment needs no ordinal");
+
   await storage.delete(binaryKey);
   await storage.delete(textKey);
 }

@@ -320,7 +320,7 @@ const readAttachmentTool: AgentTool = {
       file: {
         type: "number",
         description:
-          "Which attachment to read, numbered from 1 as listed in your instructions. Omit when exactly one file is attached.",
+          "Which attachment to read, numbered from 1 as listed in your instructions. Required when more than one file is attached.",
       },
     },
     additionalProperties: false,
@@ -333,34 +333,51 @@ const readAttachmentTool: AgentTool = {
     // Addressed by ordinal, not name: filenames are caller-controlled and never
     // appear in the system prompt, so a number is the only handle the model has.
     const requested = optionalNumber(args, "file");
-    const index = requested === undefined ? 1 : requested;
-    if (!Number.isInteger(index) || index < 1 || index > ctx.attachments.length) {
+
+    if (requested === undefined) {
+      // Defaulting to the first of several would quietly analyze the wrong
+      // document — a contract intake reading the wrong contract looks like a
+      // successful run. Make the model say which one it means.
+      if (ctx.attachments.length > 1) {
+        throw new ToolArgumentError(
+          `"file" is required when several files are attached. Pass a number between 1 and ${ctx.attachments.length}.`,
+        );
+      }
+      return readAttachmentAt(ctx, 1);
+    }
+
+    if (!Number.isInteger(requested) || requested < 1 || requested > ctx.attachments.length) {
       throw new ToolArgumentError(
         `"file" must be a whole number between 1 and ${ctx.attachments.length}.`,
       );
     }
-    const attachment = ctx.attachments[index - 1];
-
-    const file = await getStorage().get(attachment.key);
-    if (!file) {
-      throw new ToolArgumentError(`Attachment "${attachment.fileName}" is no longer available.`);
-    }
-
-    if (looksBinary(file.body)) {
-      throw new ToolArgumentError(
-        `"${attachment.fileName}" is a binary file (${attachment.contentType}) and cannot be read as text. Tell the user this format is not supported and ask them to attach a plain-text export instead. Do not guess at its contents.`,
-      );
-    }
-
-    const text = file.body.toString("utf8");
-    return {
-      fileName: attachment.fileName,
-      contentType: attachment.contentType,
-      truncated: text.length > MAX_ATTACHMENT_CHARS,
-      content: text.slice(0, MAX_ATTACHMENT_CHARS),
-    };
+    return readAttachmentAt(ctx, requested);
   },
 };
+
+/** Fetch and decode one attachment by 1-based ordinal. */
+async function readAttachmentAt(ctx: ToolContext, index: number) {
+  const attachment = ctx.attachments[index - 1];
+
+  const file = await getStorage().get(attachment.key);
+  if (!file) {
+    throw new ToolArgumentError(`Attachment "${attachment.fileName}" is no longer available.`);
+  }
+
+  if (looksBinary(file.body)) {
+    throw new ToolArgumentError(
+      `"${attachment.fileName}" is a binary file (${attachment.contentType}) and cannot be read as text. Tell the user this format is not supported and ask them to attach a plain-text export instead. Do not guess at its contents.`,
+    );
+  }
+
+  const text = file.body.toString("utf8");
+  return {
+    fileName: attachment.fileName,
+    contentType: attachment.contentType,
+    truncated: text.length > MAX_ATTACHMENT_CHARS,
+    content: text.slice(0, MAX_ATTACHMENT_CHARS),
+  };
+}
 
 const ALL_TOOLS: AgentTool[] = [
   listContractsTool,
