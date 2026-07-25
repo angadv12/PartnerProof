@@ -162,7 +162,6 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
       `Too many agent runs in flight (limit ${MAX_CONCURRENT_RUNS}). Try again once one finishes.`,
     );
   }
-  activeRuns += 1;
 
   const run: AgentRun = {
     id: generateId("run"),
@@ -210,6 +209,11 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
     emit({ type: "run.finished", at: nowIso(), status, output });
     return run;
   };
+
+  // Claimed immediately before the try whose `finally` releases it — anything
+  // that throws between the check above and here would otherwise leak a slot
+  // permanently, and the cap only ever ratchets down.
+  activeRuns += 1;
 
   try {
     for (let step = 1; step <= workflow.maxSteps; step++) {
