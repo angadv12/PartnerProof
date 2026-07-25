@@ -84,6 +84,43 @@ function parseAttachment(value: unknown, index: number): RunAttachment {
   return { key, fileName, contentType, size };
 }
 
+/**
+ * Ceiling on a run-request body.
+ *
+ * Comfortably above a legal request — a max-length prompt plus five bounded
+ * attachment records is a few tens of KB — while keeping an arbitrarily large
+ * body from being parsed before per-field validation can reject it.
+ */
+const MAX_RUN_BODY_BYTES = 256 * 1024;
+
+/**
+ * Parse a run request, refusing an oversized body before `json()` materializes
+ * it. Shared by the blocking and streaming routes so both enforce the same
+ * limits.
+ */
+export async function readStartRunRequest(req: Request): Promise<StartRunInput> {
+  const declaredLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RUN_BODY_BYTES) {
+    await req.body?.cancel().catch(() => {});
+    throw new BadRequestError("Request body is too large.");
+  }
+
+  // Without Content-Length (a chunked request) the header check sees nothing,
+  // so bound the text as it is read.
+  const text = await req.text();
+  if (text.length > MAX_RUN_BODY_BYTES) {
+    throw new BadRequestError("Request body is too large.");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new BadRequestError("Request body must be valid JSON.");
+  }
+  return parseStartRunInput(parsed);
+}
+
 export function parseStartRunInput(body: unknown): StartRunInput {
   if (!body || typeof body !== "object") {
     throw new BadRequestError("Request body must be a JSON object.");

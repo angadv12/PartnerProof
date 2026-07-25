@@ -170,6 +170,7 @@ async function main() {
     await checkStorageGuards();
     await checkUploadRequestBound();
     await checkPauseTurnAccumulatesText();
+    await checkRunBodyBound();
 
     console.log("PASS  agent runtime, provider adapter, tool registry, prompt injection");
     console.log(`      steps=${run.steps} toolResults=${toolTurns.length} events=${events.length}`);
@@ -177,6 +178,7 @@ async function main() {
     console.log("PASS  storage key sanitization and binary-attachment rejection");
     console.log("PASS  oversized chunked upload rejected, valid upload round-trips");
     console.log("PASS  paused turn replayed once, its text kept in the final output");
+    console.log("PASS  run body and attachment metadata bounded");
   } finally {
     server.close();
   }
@@ -336,6 +338,69 @@ async function checkUploadRequestBound() {
   const stored = (await okResponse.json()) as { key: string; fileName: string };
   assert.strictEqual(stored.fileName, "ok.txt");
   await getStorage().delete(stored.key);
+}
+
+/**
+ * A run request must be refused on size before its JSON is materialized, and
+ * per-field caps must reject oversized attachment metadata — which is persisted
+ * verbatim on the run record and rewritten into db.json on every save.
+ */
+async function checkRunBodyBound() {
+  const { readStartRunRequest, BadRequestError } = await import("../src/lib/agents/request");
+
+  const build = (body: unknown) =>
+    new Request("http://localhost/api/agents/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  await assert.rejects(
+    () =>
+      readStartRunRequest(
+        build({
+          workflowId: "partnership-analyst",
+          input: "hi",
+          // Well past MAX_RUN_BODY_BYTES.
+          padding: "x".repeat(400_000),
+        }),
+      ),
+    BadRequestError,
+    "an oversized run body must be refused",
+  );
+
+  await assert.rejects(
+    () =>
+      readStartRunRequest(
+        build({
+          workflowId: "contract-intake",
+          input: "hi",
+          attachments: [
+            {
+              key: "agent-uploads/ok.txt",
+              fileName: "a".repeat(5_000),
+              contentType: "text/plain",
+              size: 1,
+            },
+          ],
+        }),
+      ),
+    /fileName is too long/,
+    "oversized attachment metadata must be refused",
+  );
+
+  // A normal request still parses, and a bogus size is normalized rather than
+  // rendered into the manifest as nonsense.
+  const parsed = await readStartRunRequest(
+    build({
+      workflowId: "contract-intake",
+      input: "Extract the deliverables.",
+      attachments: [
+        { key: "agent-uploads/ok.txt", fileName: "ok.txt", contentType: "text/plain", size: -5 },
+      ],
+    }),
+  );
+  assert.strictEqual(parsed.attachments?.[0].size, 0, "a negative size must normalize to 0");
 }
 
 /**

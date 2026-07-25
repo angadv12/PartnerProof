@@ -6,7 +6,7 @@
  * pushed straight from the runtime's `onEvent` hook; the run is persisted once
  * at the end.
  */
-import { BadRequestError, parseStartRunInput } from "@/lib/agents/request";
+import { readStartRunRequest } from "@/lib/agents/request";
 import { runAgent } from "@/lib/agents/runtime";
 import { saveRun } from "@/lib/agents/store";
 import type { RunEvent } from "@/lib/agents/types";
@@ -21,7 +21,7 @@ function sse(event: string, data: unknown): string {
 export async function POST(req: Request) {
   let input;
   try {
-    input = parseStartRunInput(await req.json());
+    input = await readStartRunRequest(req);
   } catch (err) {
     // Validation and malformed-JSON failures are both the caller's fault.
     return Response.json({ error: errorMessage(err) }, { status: 400 });

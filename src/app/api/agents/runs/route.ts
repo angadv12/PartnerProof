@@ -6,7 +6,7 @@
  */
 import { NextResponse } from "next/server";
 
-import { BadRequestError, parseStartRunInput } from "@/lib/agents/request";
+import { readStartRunRequest } from "@/lib/agents/request";
 import { runAgent } from "@/lib/agents/runtime";
 import { listRuns, saveRun } from "@/lib/agents/store";
 import { errorMessage } from "@/lib/utils";
@@ -23,7 +23,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   let input;
   try {
-    input = parseStartRunInput(await req.json());
+    input = await readStartRunRequest(req);
   } catch (err) {
     // A malformed JSON body lands here too, and is equally the caller's fault.
     return NextResponse.json({ error: errorMessage(err) }, { status: 400 });
