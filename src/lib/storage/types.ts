@@ -43,8 +43,17 @@ export interface Storage {
    * Pre-authorize a direct browser upload, bypassing the app server. Null when
    * the driver cannot do this (local disk), in which case callers POST the bytes
    * to the app instead.
+   *
+   * `contentLength` is signed, not advisory: the client must PUT exactly that
+   * many bytes or S3 rejects the request. Without it a presigned PUT accepts an
+   * object of any size, which would let the direct-upload path walk straight
+   * past the limit the proxied path enforces.
    */
-  presignUpload(key: string, contentType: string): Promise<PresignedUpload | null>;
+  presignUpload(
+    key: string,
+    contentType: string,
+    contentLength: number,
+  ): Promise<PresignedUpload | null>;
 }
 
 /**

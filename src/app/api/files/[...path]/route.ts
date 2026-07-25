@@ -18,9 +18,10 @@ export const dynamic = "force-dynamic";
 export async function GET(_req: Request, { params }: { params: Promise<{ path: string[] }> }) {
   const { path: segments } = await params;
 
-  // `sanitizeKey` in the storage layer rejects traversal; decode first so an
-  // encoded `..` cannot slip past it.
-  const key = segments.map((s) => decodeURIComponent(s)).join("/");
+  // Next already percent-decodes dynamic segments. Decoding again would corrupt
+  // a key containing a literal `%25` and would throw on a malformed sequence;
+  // `sanitizeKey` in the storage layer is what rejects traversal.
+  const key = segments.join("/");
 
   try {
     const storage = getStorage();

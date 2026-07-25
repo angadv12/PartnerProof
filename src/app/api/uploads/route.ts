@@ -40,17 +40,38 @@ export async function POST(req: Request) {
     const storage = getStorage();
 
     if (wantsPresign) {
-      const body = (await req.json()) as { fileName?: unknown; contentType?: unknown };
+      const body = (await req.json()) as {
+        fileName?: unknown;
+        contentType?: unknown;
+        size?: unknown;
+      };
       const fileName = typeof body.fileName === "string" ? body.fileName.trim() : "";
       if (!fileName) {
         return NextResponse.json({ error: '"fileName" is required.' }, { status: 400 });
       }
+
+      // The size is required and gets signed into the URL, so the direct-upload
+      // path cannot exceed the limit the proxied path enforces.
+      const size = typeof body.size === "number" ? body.size : Number(body.size);
+      if (!Number.isInteger(size) || size <= 0) {
+        return NextResponse.json(
+          { error: '"size" is required and must be the exact byte length of the file.' },
+          { status: 400 },
+        );
+      }
+      if (size > MAX_UPLOAD_BYTES) {
+        return NextResponse.json(
+          { error: `File exceeds the ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB limit.` },
+          { status: 413 },
+        );
+      }
+
       const contentType =
         typeof body.contentType === "string" && body.contentType.trim()
           ? body.contentType.trim()
           : contentTypeForName(fileName);
 
-      const presigned = await storage.presignUpload(buildKey(fileName), contentType);
+      const presigned = await storage.presignUpload(buildKey(fileName), contentType, size);
       if (!presigned) {
         return NextResponse.json(
           {
@@ -60,7 +81,7 @@ export async function POST(req: Request) {
           { status: 501 },
         );
       }
-      return NextResponse.json({ ...presigned, fileName, contentType });
+      return NextResponse.json({ ...presigned, fileName, contentType, size });
     }
 
     const form = await req.formData();

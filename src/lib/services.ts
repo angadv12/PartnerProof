@@ -262,9 +262,9 @@ export function listEvidence(sponsorId?: string): EvidenceWithContext[] {
 export async function uploadEvidence(
   input: UploadEvidenceInput,
 ): Promise<EvidenceWithContext | null> {
-  const db = getDb();
-  const deliverable = db.deliverables.find((d) => d.id === input.deliverableId);
-  if (!deliverable) return null;
+  // Validate against a throwaway snapshot so a bad ID costs no upload. The
+  // snapshot used for the actual mutation is read *after* the await below.
+  if (!getDb().deliverables.some((d) => d.id === input.deliverableId)) return null;
 
   const id = generateId("ev");
   let filePath: string | undefined;
@@ -277,6 +277,14 @@ export async function uploadEvidence(
     await getStorage().put(key, input.fileBuffer, contentTypeForName(input.fileName));
     filePath = storageUrl(key);
   }
+
+  // Read-modify-write has to happen with no await in between: the store is a
+  // whole-file JSON snapshot, so saving one read before the upload would clobber
+  // any write that landed while the upload was in flight.
+  const db = getDb();
+  const deliverable = db.deliverables.find((d) => d.id === input.deliverableId);
+  // Could have been deleted while the file uploaded.
+  if (!deliverable) return null;
 
   const evidence: Evidence = {
     id,

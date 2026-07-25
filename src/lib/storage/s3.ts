@@ -104,17 +104,31 @@ export class S3Storage implements Storage {
     );
   }
 
-  async presignUpload(key: string, contentType: string): Promise<PresignedUpload> {
+  async presignUpload(
+    key: string,
+    contentType: string,
+    contentLength: number,
+  ): Promise<PresignedUpload> {
     const safeKey = sanitizeKey(key);
     const url = await getSignedUrl(
       this.getClient(),
-      new PutObjectCommand({ Bucket: this.bucket, Key: safeKey, ContentType: contentType }),
-      { expiresIn: UPLOAD_URL_TTL_SECONDS },
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: safeKey,
+        ContentType: contentType,
+        // Signed, so S3 itself enforces the exact byte count. This is what keeps
+        // the direct-upload path inside the same size limit as the proxied one.
+        ContentLength: contentLength,
+      }),
+      { expiresIn: UPLOAD_URL_TTL_SECONDS, signableHeaders: new Set(["content-length", "content-type"]) },
     );
     return {
       url,
-      // Content-Type is part of the signature; a mismatched PUT is rejected.
-      headers: { "Content-Type": contentType },
+      // Both headers are part of the signature; a mismatched PUT is rejected.
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": String(contentLength),
+      },
       key: safeKey,
       expiresInSeconds: UPLOAD_URL_TTL_SECONDS,
     };

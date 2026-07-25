@@ -101,6 +101,8 @@ Apply an update only when the user's request clearly covers it, or when evidence
       "Reads an uploaded contract and proposes the deliverables it commits the team to.",
     instructions: `Extract sponsorship obligations from an uploaded contract.
 
+The attachment must be a plain-text export (.txt, .md, .csv, or pasted contract text). Binary formats such as PDF and .docx cannot be read — if read_attachment reports the file is binary, tell the user that plainly and stop. Do not guess at the contents.
+
 Read the attachment first. Pull out every activation the team commits to, with its category, required quantity, and any deadline the text states. Quote the source line for each one so a human can verify it.
 
 Do not guess at quantities the document does not state — say "not specified" instead. Do not create records; this is a proposal the user reviews.
