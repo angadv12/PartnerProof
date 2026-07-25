@@ -146,6 +146,17 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
     throw new Error("A prompt is required to start a run.");
   }
 
+  const attachments = input.attachments ?? [];
+
+  // Attachment metadata is caller-controlled and the manifest lists it in the
+  // system prompt, so a workflow that cannot read attachments must not accept
+  // them either. Checked here, with the other request-shape rules, so a
+  // malformed request reports as such rather than being masked by a
+  // provider-configuration error further down.
+  if (attachments.length > 0 && !workflow.toolNames.includes("read_attachment")) {
+    throw new Error(`The "${workflow.label}" workflow does not accept attachments.`);
+  }
+
   const provider = input.provider ? getProviderChecked(input.provider) : resolveProvider();
 
   // Only models the provider advertises, so a request body cannot redirect
@@ -162,15 +173,6 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
   const model = requestedModel || provider.defaultModel();
   const tools = resolveTools(workflow.toolNames);
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
-  const attachments = input.attachments ?? [];
-
-  // Attachment metadata is caller-controlled and gets listed in the system
-  // prompt, so a workflow that cannot read attachments must not accept them
-  // either — otherwise a crafted filename reaches a write-capable workflow at
-  // system privilege without the file ever being opened.
-  if (attachments.length > 0 && !workflow.toolNames.includes("read_attachment")) {
-    throw new Error(`The "${workflow.label}" workflow does not accept attachments.`);
-  }
 
   if (activeRuns >= MAX_CONCURRENT_RUNS) {
     throw new Error(
