@@ -69,6 +69,9 @@ export class LocalProvider implements LLMProvider {
         apiKey: process.env.LOCAL_MODEL_API_KEY || "local",
         baseURL,
         timeoutMs: LOCAL_TIMEOUT_MS,
+        // Ollama and friends document `max_tokens`, not the newer name. Sending
+        // the wrong one gets it ignored, which silently drops the output cap.
+        tokenLimitField: "max_tokens",
       },
       { ...request, model: request.model || this.defaultModel() },
     );

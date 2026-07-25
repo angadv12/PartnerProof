@@ -46,9 +46,28 @@ export function getDb(): Database {
   }
 }
 
+/**
+ * Persist the database atomically.
+ *
+ * Writing in place leaves a window where the file on disk is half-written. A
+ * concurrent reader that lands in that window sees invalid JSON, and `getDb`
+ * treats invalid JSON as corruption and reseeds — so a torn read would destroy
+ * the whole store. Writing to a temp file and renaming closes the window:
+ * rename is atomic within a filesystem, so a reader sees either the old file or
+ * the new one, never a partial.
+ */
 export function saveDb(db: Database): void {
   ensureDirs();
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), "utf8");
+  const payload = JSON.stringify(db, null, 2);
+  // Unique suffix so concurrent writers never share a temp file.
+  const tmpPath = `${DB_PATH}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, payload, "utf8");
+    fs.renameSync(tmpPath, DB_PATH);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
 }
 
 /** Read, mutate, and persist in a single call. Returns whatever `fn` returns. */

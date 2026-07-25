@@ -102,6 +102,11 @@ export interface ToolContext {
   runId: string;
   /** Storage keys of files attached to this run. */
   attachments: RunAttachment[];
+  /**
+   * Aborted when the run is cancelled. Handlers doing slow I/O should pass it
+   * through and bail before committing any side effect.
+   */
+  signal?: AbortSignal;
 }
 
 export interface AgentTool extends ToolDefinition {

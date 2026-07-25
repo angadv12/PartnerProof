@@ -6,7 +6,7 @@
  * prompt is prepended to every one of these by the runtime — `instructions`
  * here only ever appends a role.
  */
-import { allToolNames } from "./tools";
+import { allToolNames, getTool } from "./tools";
 
 export interface WorkflowDefinition {
   id: string;
@@ -23,14 +23,23 @@ export interface WorkflowDefinition {
   expectsAttachment?: boolean;
 }
 
-const READ_ONLY_TOOLS = [
+/** Platform data reads. Trusted input — everything here comes from our own store. */
+const DATA_TOOLS = [
   "list_contracts",
   "get_contract",
   "search_deliverables",
   "get_dashboard",
   "list_evidence",
-  "read_attachment",
 ];
+
+/**
+ * Reading an attachment pulls untrusted text into the context, where a
+ * malicious document can try to steer the agent. Prompt wording alone is not a
+ * defense, so a workflow gets `read_attachment` **or** write tools, never both:
+ * an injected instruction then has nothing to reach for. Workflows that need to
+ * act on a document propose changes for a human to apply.
+ */
+const ATTACHMENT_TOOLS = [...DATA_TOOLS, "read_attachment"];
 
 export const WORKFLOWS: WorkflowDefinition[] = [
   {
@@ -43,7 +52,7 @@ export const WORKFLOWS: WorkflowDefinition[] = [
 Start by looking up the data you need — do not answer from the question alone. For status questions, search deliverables with the tightest filter that fits. For "how are we doing" questions, use the dashboard roll-up rather than counting rows yourself.
 
 Close with the concrete number the user is actually deciding on: how many obligations are outstanding, what percentage is fulfilled, which sponsor needs attention.`,
-    toolNames: READ_ONLY_TOOLS,
+    toolNames: ATTACHMENT_TOOLS,
     maxSteps: 8,
     samplePrompt: "What do we still owe Pepsi this season, and what is at risk?",
   },
@@ -59,7 +68,7 @@ Find every obligation that is At Risk or Missed, group them by sponsor, and asse
 Do not modify any records. This is an assessment; the user decides what to act on.
 
 Output: a short exposure summary, then one section per affected sponsor with the specific obligations and your proposed make-good.`,
-    toolNames: READ_ONLY_TOOLS,
+    toolNames: ATTACHMENT_TOOLS,
     maxSteps: 12,
     samplePrompt: "Audit the whole portfolio for delivery risk before the season ends.",
   },
@@ -75,7 +84,7 @@ Look up the contract, its deliverables, and its evidence before writing a word. 
 If obligations were missed, say so and pair each with a proposed make-good — a recap that hides a miss gets caught in the renewal meeting.
 
 Output: the summary, the highlights with their supporting evidence, and the renewal talking points.`,
-    toolNames: [...READ_ONLY_TOOLS, "generate_recap"],
+    toolNames: [...DATA_TOOLS, "generate_recap"],
     maxSteps: 12,
     samplePrompt: "Write the end-of-season recap for the Gatorade contract.",
   },
@@ -89,7 +98,7 @@ Output: the summary, the highlights with their supporting evidence, and the rene
 Find obligations whose recorded status disagrees with the evidence on file — still Pending but with proof attached, or marked Delivered with nothing supporting it. Report what you found first.
 
 Apply an update only when the user's request clearly covers it, or when evidence directly confirms delivery. When evidence is ambiguous, report it and leave the record alone. State every change you made and why.`,
-    toolNames: [...READ_ONLY_TOOLS, "update_deliverable"],
+    toolNames: [...DATA_TOOLS, "update_deliverable"],
     maxSteps: 14,
     samplePrompt:
       "Reconcile our social obligations against the evidence on file and fix any that are clearly delivered.",
@@ -136,4 +145,20 @@ export function findUnknownToolNames(): string[] {
     }
   }
   return [...unknown];
+}
+
+/**
+ * Enforce the untrusted-input rule as an invariant rather than a convention:
+ * no workflow may combine `read_attachment` with a tool that writes. Asserted by
+ * `npm run smoke:agent`, so adding a write tool to an attachment workflow fails
+ * the build rather than quietly opening a prompt-injection path to mutations.
+ */
+export function findWorkflowsMixingAttachmentsAndWrites(): string[] {
+  return WORKFLOWS.filter((workflow) => {
+    if (!workflow.toolNames.includes("read_attachment")) return false;
+    return workflow.toolNames.some((name) => {
+      const tool = getTool(name);
+      return tool !== undefined && !tool.readOnly;
+    });
+  }).map((workflow) => workflow.id);
 }

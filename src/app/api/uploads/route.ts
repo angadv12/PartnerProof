@@ -84,6 +84,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ ...presigned, fileName, contentType, size });
     }
 
+    // Check the declared length before parsing: formData() buffers the whole
+    // body, so an oversized request would otherwise be fully materialized in
+    // memory before the size check below could reject it.
+    const declaredLength = Number(req.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
+      return NextResponse.json(
+        { error: `File exceeds the ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB limit.` },
+        { status: 413 },
+      );
+    }
+
     const form = await req.formData();
     const file = form.get("file");
     if (!file || typeof file === "string") {

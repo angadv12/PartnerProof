@@ -126,6 +126,24 @@ instructions, step budget:
 Runs stream over SSE so tool calls appear as they happen. Hitting the step limit triggers one
 final tool-free call, and the run is reported `incomplete` — never a silent `succeeded`.
 
+### Guardrails
+
+| Risk | Mitigation |
+|------|-----------|
+| Prompt injection via an uploaded file | A workflow gets `read_attachment` **or** write tools, never both — an injected instruction has nothing to reach for. Enforced as an invariant by `npm run smoke:agent`, not just by prompt wording. |
+| Reading arbitrary bucket objects | Run attachments must reference a key under the agent-upload prefix, so a run can only read something uploaded for a run. |
+| Binary files quoted as contract text | `read_attachment` detects binary payloads and refuses, instead of handing the model decoded noise it would quote as clauses. |
+| Runaway provider spend | Requested models must be ones the provider advertises; concurrent runs are capped (`AGENT_MAX_CONCURRENT_RUNS`, default 4); every workflow has a step budget. |
+| Cancellation racing a mutation | The abort signal is re-checked after each model call and between tool calls, so a cancel cannot let queued writes through. |
+| Torn reads of the JSON store | `saveDb` writes to a temp file and renames. Without this, a reader hitting a half-written file would see invalid JSON — which the store treats as corruption and reseeds from, turning a race into total data loss. |
+
+> **Not addressed here: authentication and tenancy.** No route in this app has an
+> auth boundary — that predates this change and is a property of the demo, not
+> something introduced by the agent layer. But agents raise the stakes, since
+> some workflows write. Before any real deployment: authenticate every route,
+> scope runs, attachments, and tool operations to a team, and replace the
+> process-local concurrency cap with per-user quotas.
+
 ### File uploads
 
 `src/lib/storage/` abstracts uploads behind a `Storage` interface with two drivers: **S3**

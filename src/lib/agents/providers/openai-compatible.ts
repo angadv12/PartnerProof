@@ -100,6 +100,13 @@ export interface OpenAICompatibleOptions {
   baseURL?: string;
   /** Local servers can be slow to first token on a cold model load. */
   timeoutMs?: number;
+  /**
+   * Which output-token field to send. Hosted OpenAI reasoning models require
+   * `max_completion_tokens`; Ollama and several other local servers only
+   * document `max_tokens` and may ignore or reject the newer name — which would
+   * silently remove the output bound.
+   */
+  tokenLimitField?: "max_completion_tokens" | "max_tokens";
 }
 
 export async function completeViaChatCompletions(
@@ -122,10 +129,12 @@ export async function completeViaChatCompletions(
     },
   }));
 
+  const tokenLimitField = options.tokenLimitField ?? "max_completion_tokens";
+
   const response = await client.chat.completions.create(
     {
       model: request.model,
-      max_completion_tokens: request.maxTokens,
+      [tokenLimitField]: request.maxTokens,
       messages: toChatMessages(request.system, request.messages),
       // Sending `tools: []` makes some local servers reject the request.
       ...(tools.length > 0 ? { tools } : {}),

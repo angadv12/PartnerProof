@@ -4,6 +4,7 @@
  * Kept out of the route handlers so the streaming endpoint and the plain JSON
  * endpoint enforce identical rules.
  */
+import { isAttachableKey, sanitizeKey } from "../storage";
 import { isProviderId } from "./types";
 import type { RunAttachment, StartRunInput } from "./types";
 import { getWorkflow } from "./workflows";
@@ -20,11 +21,27 @@ function parseAttachment(value: unknown, index: number): RunAttachment {
     throw new BadRequestError(`attachments[${index}] must be an object.`);
   }
   const raw = value as Record<string, unknown>;
-  const key = typeof raw.key === "string" ? raw.key.trim() : "";
+  const rawKey = typeof raw.key === "string" ? raw.key.trim() : "";
   const fileName = typeof raw.fileName === "string" ? raw.fileName.trim() : "";
-  if (!key || !fileName) {
+  if (!rawKey || !fileName) {
     throw new BadRequestError(`attachments[${index}] requires "key" and "fileName".`);
   }
+
+  // The key comes from the client and `read_attachment` reads whatever it names,
+  // so it has to be normalized and confined to the agent-upload prefix — an
+  // unchecked key would let a run read any object in the bucket.
+  let key: string;
+  try {
+    key = sanitizeKey(rawKey);
+  } catch {
+    throw new BadRequestError(`attachments[${index}] has an invalid key.`);
+  }
+  if (!isAttachableKey(key)) {
+    throw new BadRequestError(
+      `attachments[${index}] must reference a file uploaded through /api/uploads.`,
+    );
+  }
+
   return {
     key,
     fileName,

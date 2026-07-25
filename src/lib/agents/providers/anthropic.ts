@@ -42,6 +42,10 @@ function mapStopReason(reason: string | null): StopReason {
     case "tool_use":
       return "tool_use";
     case "max_tokens":
+    // The response is truncated, not finished. Mapping either of these to "end"
+    // would report a cut-off answer as a successful one.
+    case "model_context_window_exceeded":
+    case "pause_turn":
       return "max_tokens";
     case "refusal":
       return "refusal";
@@ -174,7 +178,13 @@ export class AnthropicProvider implements LLMProvider {
       toolCalls,
       stopReason: mapStopReason(response.stop_reason),
       usage: {
-        inputTokens: response.usage.input_tokens,
+        // Total input is input + cache writes + cache reads. We enable prompt
+        // caching above, so counting only `input_tokens` would under-report the
+        // prompt by most of its size once the cache is warm.
+        inputTokens:
+          response.usage.input_tokens +
+          (response.usage.cache_creation_input_tokens ?? 0) +
+          (response.usage.cache_read_input_tokens ?? 0),
         outputTokens: response.usage.output_tokens,
       },
       refusalReason: response.stop_reason === "refusal" ? "Declined by safety classifier" : undefined,

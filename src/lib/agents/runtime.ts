@@ -14,7 +14,7 @@
  * - Hitting the step limit triggers one final tool-free call so the user gets a
  *   real answer, and the run is reported `incomplete` rather than `succeeded`.
  */
-import { getProvider, resolveProvider } from "./providers";
+import { getProvider, isKnownModel, resolveProvider } from "./providers";
 import { buildSystemPrompt } from "./system-prompt";
 import { resolveTools } from "./tools";
 import type {
@@ -36,6 +36,18 @@ const MAX_TOKENS = 8_000;
 
 /** Serialized tool result handed back to the model, in characters. */
 const MAX_TOOL_RESULT_CHARS = 24_000;
+
+/**
+ * Concurrent runs allowed per server process.
+ *
+ * Each run can make several model calls, so unbounded concurrency turns one
+ * client into unbounded provider spend. This is a backstop, not a quota system:
+ * it is per-process and resets on restart. A real deployment wants per-user
+ * limits behind authentication (see the auth note in the README).
+ */
+const MAX_CONCURRENT_RUNS = Number(process.env.AGENT_MAX_CONCURRENT_RUNS) || 4;
+
+let activeRuns = 0;
 
 export interface RunOptions {
   onEvent?: (event: RunEvent) => void;
@@ -128,10 +140,29 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
   }
 
   const provider = input.provider ? getProviderChecked(input.provider) : resolveProvider();
-  const model = input.model?.trim() || provider.defaultModel();
+
+  // Only models the provider advertises, so a request body cannot redirect
+  // spend onto an arbitrary (or far more expensive) model.
+  const requestedModel = input.model?.trim();
+  if (requestedModel && !isKnownModel(provider, requestedModel)) {
+    throw new Error(
+      `Model "${requestedModel}" is not available for ${provider.label}. Options: ${provider
+        .listModels()
+        .map((m) => m.id)
+        .join(", ")}.`,
+    );
+  }
+  const model = requestedModel || provider.defaultModel();
   const tools = resolveTools(workflow.toolNames);
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
   const attachments = input.attachments ?? [];
+
+  if (activeRuns >= MAX_CONCURRENT_RUNS) {
+    throw new Error(
+      `Too many agent runs in flight (limit ${MAX_CONCURRENT_RUNS}). Try again once one finishes.`,
+    );
+  }
+  activeRuns += 1;
 
   const run: AgentRun = {
     id: generateId("run"),
@@ -165,7 +196,7 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
 
   const system = buildSystemPrompt(describeAssignment(workflow.instructions, attachments));
   const messages: AgentMessage[] = [{ role: "user", content: prompt }];
-  const ctx: ToolContext = { runId: run.id, attachments };
+  const ctx: ToolContext = { runId: run.id, attachments, signal: options.signal };
 
   const addUsage = (usage: TokenUsage) => {
     run.usage.inputTokens += usage.inputTokens;
@@ -227,6 +258,12 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
         return finish("succeeded", response.text);
       }
 
+      // A cancel that arrives while the model was generating must not go on to
+      // run this turn's tools — some of them mutate records.
+      if (options.signal?.aborted) {
+        return finish("cancelled", response.text, "Cancelled by the user.");
+      }
+
       for (const call of response.toolCalls) {
         emit({
           type: "tool.called",
@@ -238,15 +275,26 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
         });
       }
 
-      // Reads fan out; writes go one at a time against the shared store.
-      const reads = response.toolCalls.filter((c) => toolsByName.get(c.name)?.readOnly === true);
-      const writes = response.toolCalls.filter((c) => toolsByName.get(c.name)?.readOnly !== true);
-
-      const outcomes: ToolOutcome[] = await Promise.all(
-        reads.map((call) => invokeTool(toolsByName.get(call.name), call, ctx, step)),
+      // Fanning out is only safe when the whole turn is reads. If the model
+      // mixed a write in, running reads first would compute results against
+      // pre-write state while the transcript implies the model's own ordering —
+      // so a turn containing any write executes serially, in the order asked.
+      const allReadOnly = response.toolCalls.every(
+        (call) => toolsByName.get(call.name)?.readOnly === true,
       );
-      for (const call of writes) {
-        outcomes.push(await invokeTool(toolsByName.get(call.name), call, ctx, step));
+
+      let outcomes: ToolOutcome[];
+      if (allReadOnly) {
+        outcomes = await Promise.all(
+          response.toolCalls.map((call) => invokeTool(toolsByName.get(call.name), call, ctx, step)),
+        );
+      } else {
+        outcomes = [];
+        for (const call of response.toolCalls) {
+          // Re-check between calls so a cancel stops the remaining mutations.
+          if (options.signal?.aborted) break;
+          outcomes.push(await invokeTool(toolsByName.get(call.name), call, ctx, step));
+        }
       }
 
       // Preserve the model's own call order so results line up with its plan.
@@ -256,6 +304,10 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
         if (!outcome) continue;
         emit(outcome.event);
         messages.push(outcome.message);
+      }
+
+      if (options.signal?.aborted) {
+        return finish("cancelled", response.text, "Cancelled by the user.");
       }
     }
 
@@ -293,6 +345,9 @@ export async function runAgent(input: StartRunInput, options: RunOptions = {}): 
     const message = errorText(err);
     emit({ type: "run.error", at: nowIso(), message });
     return finish("failed", run.output, message);
+  } finally {
+    // Release the concurrency slot on every exit path, including a throw.
+    activeRuns -= 1;
   }
 }
 

@@ -13,7 +13,12 @@ import http from "node:http";
 
 import { runAgent } from "../src/lib/agents/runtime";
 import { PLATFORM_SYSTEM_PROMPT } from "../src/lib/agents/system-prompt";
-import { findUnknownToolNames } from "../src/lib/agents/workflows";
+import { getTool } from "../src/lib/agents/tools";
+import {
+  findUnknownToolNames,
+  findWorkflowsMixingAttachmentsAndWrites,
+} from "../src/lib/agents/workflows";
+import { AGENT_UPLOAD_PREFIX, getStorage, sanitizeKey } from "../src/lib/storage";
 
 interface ChatBody {
   messages: { role: string; content: unknown; tool_calls?: unknown[] }[];
@@ -86,6 +91,14 @@ async function main() {
       "a workflow references an unknown tool",
     );
 
+    // Untrusted file contents must never share a workflow with a write tool,
+    // or an injected instruction inside an upload could drive a mutation.
+    assert.deepStrictEqual(
+      findWorkflowsMixingAttachmentsAndWrites(),
+      [],
+      "a workflow combines read_attachment with a write tool",
+    );
+
     const events: string[] = [];
     const run = await runAgent(
       { workflowId: "partnership-analyst", input: "What is at risk?", provider: "local" },
@@ -131,11 +144,59 @@ async function main() {
       assert.ok(events.includes(expected), `missing event ${expected}`);
     }
 
+    await checkStorageGuards();
+
     console.log("PASS  agent runtime, provider adapter, tool registry, prompt injection");
     console.log(`      steps=${run.steps} toolResults=${toolTurns.length} events=${events.length}`);
+    console.log("PASS  storage key sanitization and binary-attachment rejection");
   } finally {
     server.close();
   }
+}
+
+/**
+ * Regressions for two review findings: keys must not be able to escape their
+ * prefix, and a binary attachment must be refused rather than decoded into
+ * garbage the agent would then quote as if it were contract text.
+ */
+async function checkStorageGuards() {
+  for (const bad of ["../secrets.env", "a/../../etc/passwd", "/etc/passwd/..", ""]) {
+    assert.throws(() => sanitizeKey(bad), `sanitizeKey should reject ${JSON.stringify(bad)}`);
+  }
+  assert.strictEqual(sanitizeKey("/evidence//ev-1.png"), "evidence/ev-1.png");
+
+  const storage = getStorage();
+  const readAttachment = getTool("read_attachment");
+  assert.ok(readAttachment, "read_attachment tool is missing");
+
+  // A PDF header plus NUL bytes — what a real upload's first bytes look like.
+  const binaryKey = `${AGENT_UPLOAD_PREFIX}/smoke-binary.pdf`;
+  await storage.put(binaryKey, Buffer.from("%PDF-1.7\n\x00\x00\x00\x01stream\x00", "binary"), "application/pdf");
+
+  const textKey = `${AGENT_UPLOAD_PREFIX}/smoke-text.txt`;
+  await storage.put(textKey, Buffer.from("Sponsor shall receive 12 social posts.", "utf8"), "text/plain");
+
+  const ctx = {
+    runId: "smoke",
+    attachments: [
+      { key: binaryKey, fileName: "contract.pdf", contentType: "application/pdf", size: 24 },
+      { key: textKey, fileName: "contract.txt", contentType: "text/plain", size: 37 },
+    ],
+  };
+
+  await assert.rejects(
+    () => readAttachment.handler({ fileName: "contract.pdf" }, ctx),
+    /binary file/,
+    "a binary attachment must be refused, not decoded as text",
+  );
+
+  const readable = (await readAttachment.handler({ fileName: "contract.txt" }, ctx)) as {
+    content: string;
+  };
+  assert.match(readable.content, /12 social posts/, "text attachments must still be readable");
+
+  await storage.delete(binaryKey);
+  await storage.delete(textKey);
 }
 
 main().catch((err) => {
