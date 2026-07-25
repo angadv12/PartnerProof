@@ -135,7 +135,7 @@ final tool-free call, and the run is reported `incomplete` — never a silent `s
 | Binary files quoted as contract text | `read_attachment` detects binary payloads and refuses, instead of handing the model decoded noise it would quote as clauses. |
 | Runaway provider spend | Requested models must be ones the provider advertises; concurrent runs are capped (`AGENT_MAX_CONCURRENT_RUNS`, default 4); every workflow has a step budget. |
 | Cancellation racing a mutation | The abort signal is re-checked after each model call and between tool calls, so a cancel cannot let queued writes through. |
-| Injection via attachment *metadata* | Filenames are listed in the system prompt, so they are flattened to a single bounded line with structural characters stripped — and a workflow without `read_attachment` refuses attachments entirely, rather than accepting caller-controlled text it cannot read. |
+| Injection via attachment *metadata* | Attachments are listed in the system prompt by server-generated ordinal and byte size — never by filename. No character filter can strip instruction-shaped language while leaving a readable name, so caller text simply never reaches the system role; the real filename comes back through a tool result. A workflow without `read_attachment` refuses attachments outright. |
 | Torn reads of the JSON store | `saveDb` writes to a temp file and renames. Without this, a reader hitting a half-written file would see invalid JSON — which the store treats as corruption and reseeds from, turning a race into total data loss. |
 
 Two limits are known and deliberately not papered over:

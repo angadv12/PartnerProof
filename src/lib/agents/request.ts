@@ -16,6 +16,33 @@ const MAX_PROMPT_CHARS = 20_000;
 
 const MAX_ATTACHMENTS = 5;
 
+/**
+ * Per-field caps on attachment metadata.
+ *
+ * These strings are persisted verbatim on the run record and rewritten into
+ * db.json on every save, so an unbounded `fileName` is not just a prompt
+ * problem — a request carrying megabytes of metadata would bloat the store
+ * permanently. Real values are far below these limits; the keys are
+ * server-generated and the names come from a filesystem.
+ */
+const MAX_KEY_CHARS = 300;
+const MAX_FILE_NAME_CHARS = 255;
+const MAX_CONTENT_TYPE_CHARS = 128;
+
+function boundedField(
+  value: string,
+  limit: number,
+  field: string,
+  index: number,
+): string {
+  if (value.length > limit) {
+    throw new BadRequestError(
+      `attachments[${index}].${field} is too long (limit ${limit} characters).`,
+    );
+  }
+  return value;
+}
+
 function parseAttachment(value: unknown, index: number): RunAttachment {
   if (!value || typeof value !== "object") {
     throw new BadRequestError(`attachments[${index}] must be an object.`);
@@ -26,6 +53,8 @@ function parseAttachment(value: unknown, index: number): RunAttachment {
   if (!rawKey || !fileName) {
     throw new BadRequestError(`attachments[${index}] requires "key" and "fileName".`);
   }
+  boundedField(rawKey, MAX_KEY_CHARS, "key", index);
+  boundedField(fileName, MAX_FILE_NAME_CHARS, "fileName", index);
 
   // The key comes from the client and `read_attachment` reads whatever it names,
   // so it has to be normalized and confined to the agent-upload prefix — an
@@ -42,15 +71,17 @@ function parseAttachment(value: unknown, index: number): RunAttachment {
     );
   }
 
-  return {
-    key,
-    fileName,
-    contentType:
-      typeof raw.contentType === "string" && raw.contentType.trim()
-        ? raw.contentType.trim()
-        : "application/octet-stream",
-    size: typeof raw.size === "number" && Number.isFinite(raw.size) ? raw.size : 0,
-  };
+  const contentType =
+    typeof raw.contentType === "string" && raw.contentType.trim()
+      ? raw.contentType.trim()
+      : "application/octet-stream";
+  boundedField(contentType, MAX_CONTENT_TYPE_CHARS, "contentType", index);
+
+  // A negative or non-finite size would render as nonsense in the manifest.
+  const rawSize = typeof raw.size === "number" ? raw.size : Number(raw.size);
+  const size = Number.isFinite(rawSize) && rawSize > 0 ? Math.floor(rawSize) : 0;
+
+  return { key, fileName, contentType, size };
 }
 
 export function parseStartRunInput(body: unknown): StartRunInput {

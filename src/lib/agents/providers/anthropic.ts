@@ -138,7 +138,12 @@ export class AnthropicProvider implements LLMProvider {
     if (!this.client) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (!apiKey) throw new Error(this.configurationHint());
-      this.client = new Anthropic({ apiKey });
+      this.client = new Anthropic({
+        apiKey,
+        // Lets requests go through a gateway or proxy, and lets the smoke test
+        // drive the real adapter against a stub server.
+        baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      });
     }
     return this.client;
   }

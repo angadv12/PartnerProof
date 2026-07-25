@@ -53,22 +53,22 @@ async function readBounded(
   const chunks: Uint8Array[] = [];
   let total = 0;
 
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > limit) {
-        throw new RequestTooLargeError(`Request body exceeds ${limit} bytes.`);
-      }
-      chunks.push(value);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > limit) {
+      // Cancel, don't just release: releasing the lock leaves the underlying
+      // source running, so an oversized sender would keep streaming after the
+      // 413. Cancelling tears the body down and frees the connection.
+      await reader.cancel().catch(() => {});
+      throw new RequestTooLargeError(`Request body exceeds ${limit} bytes.`);
     }
-  } finally {
-    // Releases the underlying connection on both the success and abort paths.
-    reader.releaseLock();
+    chunks.push(value);
   }
 
+  reader.releaseLock();
   return Buffer.concat(chunks, total);
 }
 
@@ -139,6 +139,9 @@ export async function POST(req: Request) {
     // they arrive is what actually caps memory.
     const declaredLength = Number(req.headers.get("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
+      // Tear down the body here too, so a sender that already started pushing
+      // does not keep streaming into a request we have rejected.
+      await req.body?.cancel().catch(() => {});
       return NextResponse.json({ error: oversizeMessage() }, { status: 413 });
     }
 
