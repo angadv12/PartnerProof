@@ -135,14 +135,26 @@ final tool-free call, and the run is reported `incomplete` — never a silent `s
 | Binary files quoted as contract text | `read_attachment` detects binary payloads and refuses, instead of handing the model decoded noise it would quote as clauses. |
 | Runaway provider spend | Requested models must be ones the provider advertises; concurrent runs are capped (`AGENT_MAX_CONCURRENT_RUNS`, default 4); every workflow has a step budget. |
 | Cancellation racing a mutation | The abort signal is re-checked after each model call and between tool calls, so a cancel cannot let queued writes through. |
+| Injection via attachment *metadata* | Filenames are listed in the system prompt, so they are flattened to a single bounded line with structural characters stripped — and a workflow without `read_attachment` refuses attachments entirely, rather than accepting caller-controlled text it cannot read. |
 | Torn reads of the JSON store | `saveDb` writes to a temp file and renames. Without this, a reader hitting a half-written file would see invalid JSON — which the store treats as corruption and reseeds from, turning a race into total data loss. |
 
-> **Not addressed here: authentication and tenancy.** No route in this app has an
-> auth boundary — that predates this change and is a property of the demo, not
-> something introduced by the agent layer. But agents raise the stakes, since
-> some workflows write. Before any real deployment: authenticate every route,
-> scope runs, attachments, and tool operations to a team, and replace the
+Two limits are known and deliberately not papered over:
+
+> **Authentication and tenancy.** No route in this app has an auth boundary —
+> that predates this change and is a property of the demo, not something
+> introduced by the agent layer. But agents raise the stakes, since some
+> workflows write. Before any real deployment: authenticate every route, scope
+> runs, attachments, and tool operations to a team, and replace the
 > process-local concurrency cap with per-user quotas.
+
+> **Concurrent writes are last-writer-wins.** The atomic rename above removes the
+> torn-file hazard, but it does not serialize snapshots: two processes can each
+> read version N, mutate different records, and the second rename silently drops
+> the first change. Every `getDb`/`saveDb` pair in the app has always had this
+> property — a whole-file JSON store cannot avoid it without cross-process
+> locking. The concurrency cap is per-process for the same reason. The fix is a
+> real database, which `db.ts`'s repository-shaped access is designed to make a
+> localized change.
 
 ### File uploads
 

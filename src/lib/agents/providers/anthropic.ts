@@ -42,11 +42,14 @@ function mapStopReason(reason: string | null): StopReason {
     case "tool_use":
       return "tool_use";
     case "max_tokens":
-    // The response is truncated, not finished. Mapping either of these to "end"
-    // would report a cut-off answer as a successful one.
+    // Truncated, not finished. Mapping this to "end" would report a cut-off
+    // answer as a successful one.
     case "model_context_window_exceeded":
-    case "pause_turn":
       return "max_tokens";
+    // Not truncation: the turn is paused and resumes by replaying it. Treating
+    // it as an ending would discard a valid long-running result.
+    case "pause_turn":
+      return "pause";
     case "refusal":
       return "refusal";
     default:

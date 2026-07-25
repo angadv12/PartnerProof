@@ -122,7 +122,16 @@ export interface AgentTool extends ToolDefinition {
 // Provider contract
 // ---------------------------------------------------------------------------
 
-export type StopReason = "end" | "tool_use" | "max_tokens" | "refusal";
+export type StopReason =
+  | "end"
+  | "tool_use"
+  | "max_tokens"
+  /**
+   * The turn was paused server-side and should be continued by replaying it,
+   * not treated as finished. Distinct from `max_tokens`: no output was lost.
+   */
+  | "pause"
+  | "refusal";
 
 export interface CompletionRequest {
   model: string;

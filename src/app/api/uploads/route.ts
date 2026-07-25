@@ -20,8 +20,57 @@ import { errorMessage, generateId } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-/** Ceiling for the proxied path; the presigned path is bounded by the bucket policy. */
+/** Ceiling on the stored file itself. */
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Ceiling on the whole request body. Multipart framing, the boundary markers,
+ * and other form fields all add bytes on top of the file, so a request carrying
+ * a legal 15MB file is legitimately larger than 15MB — bounding the request at
+ * exactly MAX_UPLOAD_BYTES would reject valid uploads.
+ */
+const MAX_REQUEST_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024;
+
+class RequestTooLargeError extends Error {}
+
+function oversizeMessage(): string {
+  return `File exceeds the ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB limit.`;
+}
+
+/**
+ * Drain a request body into memory, aborting as soon as it exceeds `limit`.
+ *
+ * The point is to stop reading rather than to buffer efficiently: an unbounded
+ * body would otherwise be fully materialized before any size check ran.
+ */
+async function readBounded(
+  body: ReadableStream<Uint8Array> | null,
+  limit: number,
+): Promise<Buffer> {
+  if (!body) return Buffer.alloc(0);
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > limit) {
+        throw new RequestTooLargeError(`Request body exceeds ${limit} bytes.`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    // Releases the underlying connection on both the success and abort paths.
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks, total);
+}
 
 /**
  * Build a collision-proof key that still ends in the original extension, so the
@@ -84,18 +133,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ ...presigned, fileName, contentType, size });
     }
 
-    // Check the declared length before parsing: formData() buffers the whole
-    // body, so an oversized request would otherwise be fully materialized in
-    // memory before the size check below could reject it.
+    // Bound the request while reading it. Checking Content-Length is not enough
+    // — a chunked request omits the header entirely, and req.formData() buffers
+    // the whole body before any size check could reject it. Counting bytes as
+    // they arrive is what actually caps memory.
     const declaredLength = Number(req.headers.get("content-length"));
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
-      return NextResponse.json(
-        { error: `File exceeds the ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB limit.` },
-        { status: 413 },
-      );
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
+      return NextResponse.json({ error: oversizeMessage() }, { status: 413 });
     }
 
-    const form = await req.formData();
+    let bounded: Buffer;
+    try {
+      bounded = await readBounded(req.body, MAX_REQUEST_BYTES);
+    } catch (err) {
+      if (err instanceof RequestTooLargeError) {
+        return NextResponse.json({ error: oversizeMessage() }, { status: 413 });
+      }
+      throw err;
+    }
+
+    // Re-wrap the bounded bytes so the standard multipart parser can read them.
+    const form = await new Request(req.url, {
+      method: "POST",
+      headers: req.headers,
+      body: new Uint8Array(bounded),
+    }).formData();
     const file = form.get("file");
     if (!file || typeof file === "string") {
       return NextResponse.json({ error: 'A "file" part is required.' }, { status: 400 });
