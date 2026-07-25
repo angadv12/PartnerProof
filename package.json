@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "seed": "tsx scripts/seed.ts",
     "reset": "tsx scripts/seed.ts",
-    "smoke:agent": "tsx scripts/smoke-agent.ts"
+    "smoke:agent": "tsx scripts/smoke-agent.ts",
+    "context:budget": "tsx scripts/context-budget.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
