@@ -41,7 +41,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const evidence = uploadEvidence(input);
+    const evidence = await uploadEvidence(input);
     if (!evidence) {
       return NextResponse.json({ error: "Linked deliverable not found" }, { status: 404 });
     }

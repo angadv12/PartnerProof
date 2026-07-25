@@ -1,5 +1,6 @@
 "use client";
 
+import { use } from "react";
 import Link from "next/link";
 import { ArrowLeft, CheckCircle2, Clock, Printer, ShieldCheck, Sparkles } from "lucide-react";
 import { useAsyncData } from "@/lib/use-async";
@@ -9,8 +10,9 @@ import { Button, Card, Skeleton } from "@/components/ui";
 import { CategoryChip, StatusBadge } from "@/components/ui/badges";
 import { EvidenceThumb } from "@/components/EvidenceThumb";
 
-export default function RecapPage({ params }: { params: { id: string } }) {
-  const { data, loading, error } = useAsyncData(() => api.recap(params.id), params.id);
+export default function RecapPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const { data, loading, error } = useAsyncData(() => api.recap(id), id);
 
   if (error) {
     return <Card className="p-6 text-sm text-red-600">Failed to generate recap: {error}</Card>;

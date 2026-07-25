@@ -13,14 +13,16 @@ function handle(id: string) {
 }
 
 // POST generates (and persists) a fresh recap; GET returns one too for convenience.
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
+export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    return handle(params.id);
+    const { id } = await params;
+    return handle(id);
   } catch (err) {
     return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
   }
 }
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
-  return handle(params.id);
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return handle(id);
 }

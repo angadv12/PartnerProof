@@ -1,0 +1,80 @@
+/**
+ * Validation for agent run requests arriving over HTTP.
+ *
+ * Kept out of the route handlers so the streaming endpoint and the plain JSON
+ * endpoint enforce identical rules.
+ */
+import { isProviderId } from "./types";
+import type { RunAttachment, StartRunInput } from "./types";
+import { getWorkflow } from "./workflows";
+
+export class BadRequestError extends Error {}
+
+/** Guards against a giant prompt blowing past the model's context. */
+const MAX_PROMPT_CHARS = 20_000;
+
+const MAX_ATTACHMENTS = 5;
+
+function parseAttachment(value: unknown, index: number): RunAttachment {
+  if (!value || typeof value !== "object") {
+    throw new BadRequestError(`attachments[${index}] must be an object.`);
+  }
+  const raw = value as Record<string, unknown>;
+  const key = typeof raw.key === "string" ? raw.key.trim() : "";
+  const fileName = typeof raw.fileName === "string" ? raw.fileName.trim() : "";
+  if (!key || !fileName) {
+    throw new BadRequestError(`attachments[${index}] requires "key" and "fileName".`);
+  }
+  return {
+    key,
+    fileName,
+    contentType:
+      typeof raw.contentType === "string" && raw.contentType.trim()
+        ? raw.contentType.trim()
+        : "application/octet-stream",
+    size: typeof raw.size === "number" && Number.isFinite(raw.size) ? raw.size : 0,
+  };
+}
+
+export function parseStartRunInput(body: unknown): StartRunInput {
+  if (!body || typeof body !== "object") {
+    throw new BadRequestError("Request body must be a JSON object.");
+  }
+  const raw = body as Record<string, unknown>;
+
+  const input = typeof raw.input === "string" ? raw.input.trim() : "";
+  if (!input) {
+    throw new BadRequestError("A prompt is required.");
+  }
+  if (input.length > MAX_PROMPT_CHARS) {
+    throw new BadRequestError(`Prompt is too long (limit ${MAX_PROMPT_CHARS} characters).`);
+  }
+
+  const workflowId = typeof raw.workflowId === "string" ? raw.workflowId.trim() : "";
+  if (!workflowId || !getWorkflow(workflowId)) {
+    throw new BadRequestError(`Unknown workflow "${workflowId}".`);
+  }
+
+  let provider: StartRunInput["provider"];
+  if (raw.provider !== undefined && raw.provider !== null && raw.provider !== "") {
+    if (!isProviderId(raw.provider)) {
+      throw new BadRequestError(`Unknown provider "${String(raw.provider)}".`);
+    }
+    provider = raw.provider;
+  }
+
+  const model = typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : undefined;
+
+  let attachments: RunAttachment[] | undefined;
+  if (raw.attachments !== undefined) {
+    if (!Array.isArray(raw.attachments)) {
+      throw new BadRequestError('"attachments" must be an array.');
+    }
+    if (raw.attachments.length > MAX_ATTACHMENTS) {
+      throw new BadRequestError(`At most ${MAX_ATTACHMENTS} attachments per run.`);
+    }
+    attachments = raw.attachments.map(parseAttachment);
+  }
+
+  return { workflowId, input, provider, model, attachments };
+}

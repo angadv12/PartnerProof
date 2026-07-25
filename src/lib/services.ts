@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { getAssistant } from "./assistant";
 import { ACTIVE_TEAM_ID } from "./constants";
-import { getDb, saveDb, resetDb, UPLOADS_DIR } from "./db";
+import { getDb, saveDb, resetDb } from "./db";
 import { getContractExtractor } from "./extractor";
 import { formatCompactCurrency } from "./format";
 import {
@@ -21,6 +21,13 @@ import {
   enrichEvidence,
   statusCounts,
 } from "./metrics";
+import { getSearchEngine } from "./search";
+import {
+  EVIDENCE_PREFIX,
+  contentTypeForName,
+  getStorage,
+  storageUrl,
+} from "./storage";
 import type {
   AssistantResponse,
   Contract,
@@ -174,23 +181,32 @@ function withContext(db: ReturnType<typeof getDb>, d: Deliverable): DeliverableW
   };
 }
 
-export function listDeliverables(filters: DeliverableFilters = {}): DeliverableWithContext[] {
+/** Searchable text for a deliverable; matches the original haystack fields. */
+const deliverableText = (d: Deliverable) => `${d.title} ${d.description} ${d.notes ?? ""}`;
+
+export async function listDeliverables(
+  filters: DeliverableFilters = {}
+): Promise<DeliverableWithContext[]> {
   const db = getDb();
-  const search = filters.search?.toLowerCase().trim();
-  return db.deliverables
-    .filter((d) => {
-      if (filters.status && d.status !== filters.status) return false;
-      if (filters.category && d.category !== filters.category) return false;
-      if (filters.sponsorId && d.sponsorId !== filters.sponsorId) return false;
-      if (filters.contractId && d.contractId !== filters.contractId) return false;
-      if (filters.priority && d.priority !== filters.priority) return false;
-      if (search) {
-        const haystack = `${d.title} ${d.description} ${d.notes ?? ""}`.toLowerCase();
-        if (!haystack.includes(search)) return false;
-      }
-      return true;
-    })
-    .map((d) => withContext(db, d));
+
+  // Apply the structured filters first (cheap, and narrows the candidate set so
+  // semantic search only has to embed the survivors).
+  const candidates = db.deliverables.filter((d) => {
+    if (filters.status && d.status !== filters.status) return false;
+    if (filters.category && d.category !== filters.category) return false;
+    if (filters.sponsorId && d.sponsorId !== filters.sponsorId) return false;
+    if (filters.contractId && d.contractId !== filters.contractId) return false;
+    if (filters.priority && d.priority !== filters.priority) return false;
+    return true;
+  });
+
+  // Free-text search is hybrid keyword+semantic; an empty query is a no-op and
+  // returns the candidates unchanged. Falls back to exact substring if the
+  // embedding model is unavailable.
+  const search = filters.search?.trim() ?? "";
+  const matched = await getSearchEngine().search(search, candidates, deliverableText);
+
+  return matched.map((d) => withContext(db, d));
 }
 
 export function updateDeliverable(
@@ -243,7 +259,9 @@ export function listEvidence(sponsorId?: string): EvidenceWithContext[] {
     .map((e) => enrichEvidence(db, e));
 }
 
-export function uploadEvidence(input: UploadEvidenceInput): EvidenceWithContext | null {
+export async function uploadEvidence(
+  input: UploadEvidenceInput,
+): Promise<EvidenceWithContext | null> {
   const db = getDb();
   const deliverable = db.deliverables.find((d) => d.id === input.deliverableId);
   if (!deliverable) return null;
@@ -253,9 +271,11 @@ export function uploadEvidence(input: UploadEvidenceInput): EvidenceWithContext 
 
   if (input.fileBuffer && input.fileName) {
     const ext = path.extname(input.fileName) || "";
-    const storedName = `${id}${ext}`;
-    fs.writeFileSync(path.join(UPLOADS_DIR, storedName), input.fileBuffer);
-    filePath = `/api/files/${storedName}`;
+    const key = `${EVIDENCE_PREFIX}/${id}${ext}`;
+    // Write the object before the DB row, so a failed upload never leaves a
+    // record pointing at a file that does not exist.
+    await getStorage().put(key, input.fileBuffer, contentTypeForName(input.fileName));
+    filePath = storageUrl(key);
   }
 
   const evidence: Evidence = {

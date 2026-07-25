@@ -19,5 +19,5 @@ export async function GET(req: Request) {
     priority: (searchParams.get("priority") as Priority) || undefined,
     search: searchParams.get("search") || undefined,
   };
-  return NextResponse.json(listDeliverables(filters));
+  return NextResponse.json(await listDeliverables(filters));
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -36,8 +36,9 @@ import { EvidenceModal } from "@/components/EvidenceModal";
 import { EvidenceThumb } from "@/components/EvidenceThumb";
 import type { Deliverable } from "@/lib/types";
 
-export default function ContractDetailPage({ params }: { params: { id: string } }) {
-  const { data, loading, error, reload } = useAsyncData(() => api.contract(params.id), params.id);
+export default function ContractDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const { data, loading, error, reload } = useAsyncData(() => api.contract(id), id);
 
   const [editing, setEditing] = useState<Deliverable | null>(null);
   const [evidenceFor, setEvidenceFor] = useState<string | undefined>(undefined);

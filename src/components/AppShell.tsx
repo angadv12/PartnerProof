@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
+  Bot,
   Camera,
   FileBarChart2,
   FileText,
@@ -33,6 +34,7 @@ const NAV: NavItem[] = [
   { href: "/evidence", label: "Evidence", icon: Camera },
   { href: "/recaps", label: "Recap Reports", icon: FileBarChart2 },
   { href: "/assistant", label: "Assistant", icon: Sparkles },
+  { href: "/agents", label: "Agents", icon: Bot },
 ];
 
 const TEAM = { name: "Harbor City Breakers", league: "Continental Basketball League" };

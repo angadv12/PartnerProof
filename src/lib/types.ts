@@ -1,3 +1,5 @@
+import type { AgentRun } from "./agents/types";
+
 /**
  * Core domain types for PartnerProof.
  *
@@ -115,6 +117,11 @@ export interface Database {
   deliverables: Deliverable[];
   evidence: Evidence[];
   recapReports: RecapReport[];
+  /**
+   * Agent run history. Optional because db.json files written before agents
+   * existed do not have it; the run store materializes it on first write.
+   */
+  agentRuns?: AgentRun[];
 }
 
 // ---------------------------------------------------------------------------

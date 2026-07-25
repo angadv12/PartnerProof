@@ -13,6 +13,9 @@
 # local data store & uploaded evidence (runtime-generated)
 /.data/
 
+# locally generated recap exports
+/reports_dev/
+
 # misc
 .DS_Store
 *.pem

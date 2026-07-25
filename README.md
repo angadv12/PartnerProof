@@ -59,6 +59,7 @@ npm start
 | `npm start` | Run the production server |
 | `npm run lint` | Run ESLint |
 | `npm run seed` / `npm run reset` | Reset the local data store to the seed dataset |
+| `npm run smoke:agent` | End-to-end agent-runtime test against a stub model (no API key needed) |
 
 > **Reset during a demo:** click around, change statuses, add evidence — then run
 > `npm run reset` (or `POST /api/reset`) to restore the pristine seed data.
@@ -89,6 +90,52 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ---
 
+## 🕹️ Agentic workflows
+
+`/agents` runs autonomous, tool-calling agents over live platform data. An agent picks its
+own tools, calls them in a loop, and answers from what it actually retrieved.
+
+**Three providers, one interface.** `src/lib/agents/providers/` adapts Anthropic (Messages
+API), OpenAI (Chat Completions), and any local OpenAI-compatible server — Ollama, LM Studio,
+vLLM — to a single `LLMProvider` contract. Nothing above that directory imports a vendor SDK,
+so a run can switch providers by changing one dropdown. Unconfigured providers surface in the
+UI as disabled with the reason, instead of failing mid-run.
+
+**One system prompt, injected everywhere.** `src/lib/agents/system-prompt.ts` holds the
+platform preamble — domain context, grounding rules, output style, and boundaries. The
+runtime is the only path to a provider and it always prepends this text, so a workflow can
+append a role but can never opt out. It sits at the front of the prompt, which also makes it
+the cacheable prefix.
+
+**Tools are the service layer.** Each tool in `src/lib/agents/tools/` wraps an existing
+service function, so agents obey the same business rules as the UI. Tool failures return to
+the model as error results rather than exceptions — a bad argument costs one turn, not the
+run. Read-only tools run concurrently; writes are serialized.
+
+**Workflows** (`src/lib/agents/workflows.ts`) are named configurations — tool allowlist, role
+instructions, step budget:
+
+| Workflow | Does |
+|----------|------|
+| `partnership-analyst` | Answers portfolio questions from live data |
+| `risk-audit` | Sweeps for at-risk/missed obligations, proposes make-goods |
+| `recap-writer` | Builds an evidence-backed recap and persists it |
+| `fulfillment-updater` | Reconciles records against evidence, applies approved changes |
+| `contract-intake` | Reads an uploaded contract, proposes deliverables |
+
+Runs stream over SSE so tool calls appear as they happen. Hitting the step limit triggers one
+final tool-free call, and the run is reported `incomplete` — never a silent `succeeded`.
+
+### File uploads
+
+`src/lib/storage/` abstracts uploads behind a `Storage` interface with two drivers: **S3**
+(used automatically when `S3_BUCKET` is set) and local disk (the zero-config default).
+Callers only ever handle opaque keys. The bucket stays private — reads are served as
+short-lived presigned URLs via `/api/files/[...path]`, and `POST /api/uploads?presign=1`
+returns a presigned PUT so large files never transit the app server.
+
+---
+
 ## 🗂️ Project structure
 
 ```
@@ -100,10 +147,12 @@ src/
     evidence/                    # evidence gallery
     recaps/                      # recap index
     assistant/                   # AI assistant
+    agents/                      # agentic workflow console
     api/                         # REST API (route handlers)
       contracts, contracts/[id], contracts/[id]/recap,
       deliverables, deliverables/[id], extract, evidence,
-      assistant, dashboard, sponsors, files/[name], reset
+      assistant, dashboard, sponsors, files/[...path], reset,
+      agents, agents/runs, agents/runs/[id], agents/runs/stream, uploads
   components/
     AppShell.tsx                 # sidebar + topbar shell
     DeliverableModal, EvidenceModal, EvidenceThumb
@@ -118,7 +167,19 @@ src/
     extractor.ts                 # ContractExtractor abstraction + mock
     assistant.ts                 # AssistantEngine abstraction + rule engine
     api-client.ts                # typed client fetch wrapper
-scripts/seed.ts                  # reset/seed CLI
+    agents/
+      types.ts                   # provider-agnostic agent contracts
+      system-prompt.ts           # platform prompt injected into every agent
+      runtime.ts                 # the tool-calling loop
+      workflows.ts               # named agent configurations
+      request.ts                 # HTTP request validation
+      store.ts                   # run persistence
+      providers/                 # anthropic · openai · local (+ shared adapter)
+      tools/                     # domain tools over the service layer
+    storage/                     # Storage interface · s3 · local disk
+scripts/
+  seed.ts                        # reset/seed CLI
+  smoke-agent.ts                 # end-to-end runtime test against a stub model
 ```
 
 ### Data model
@@ -146,8 +207,13 @@ Postgres/Prisma a localized change.
 | `GET` `POST` | `/api/evidence` | List / upload evidence (multipart) |
 | `POST` | `/api/assistant` | Ask the assistant a question |
 | `GET` | `/api/sponsors` | List sponsors |
-| `GET` | `/api/files/:name` | Serve an uploaded evidence file |
+| `GET` | `/api/files/*` | Serve an uploaded file (redirects to a presigned URL on S3) |
 | `POST` | `/api/reset` | Restore seed data |
+| `GET` | `/api/agents` | Available providers, models, and workflows |
+| `GET` `POST` | `/api/agents/runs` | List recent runs / start a run (blocking) |
+| `GET` | `/api/agents/runs/:id` | One run with its full event log |
+| `POST` | `/api/agents/runs/stream` | Start a run, stream events over SSE |
+| `POST` | `/api/uploads` | Upload a run attachment (`?presign=1` for a direct S3 PUT) |
 
 ---
 
