@@ -59,6 +59,8 @@ npm start
 | `npm start` | Run the production server |
 | `npm run lint` | Run ESLint |
 | `npm run seed` / `npm run reset` | Reset the local data store to the seed dataset |
+| `npm run smoke:agent` | End-to-end agent-runtime test against a stub model (no API key needed) |
+| `npm run context:budget` | Per-workflow context cost, for sizing a local model |
 
 > **Reset during a demo:** click around, change statuses, add evidence — then run
 > `npm run reset` (or `POST /api/reset`) to restore the pristine seed data.
@@ -89,6 +91,105 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ---
 
+## 🕹️ Agentic workflows
+
+`/agents` runs autonomous, tool-calling agents over live platform data. An agent picks its
+own tools, calls them in a loop, and answers from what it actually retrieved.
+
+**Five providers, one interface.** Everything above `src/lib/agents/providers/` speaks a
+single `LLMProvider` contract and never imports a vendor SDK, so switching providers is a
+dropdown change.
+
+| Provider | Configure with | Notes |
+|----------|---------------|-------|
+| **Anthropic** | `ANTHROPIC_API_KEY` | Messages API — its own adapter |
+| **OpenAI** | `OPENAI_API_KEY` | Chat Completions |
+| **Google Gemini** | `GEMINI_API_KEY` | Free daily quota, no subscription needed |
+| **Local model** | `LOCAL_MODEL_BASE_URL` | LM Studio, Ollama, vLLM, llama.cpp |
+| **Custom endpoint** | `CUSTOM_BASE_URL` | Groq, Together, OpenRouter, Fireworks, … |
+
+Only Anthropic needs its own adapter. The other four all speak Chat Completions, so they
+share one implementation and differ purely by an entry in `providers/catalog.ts` —
+credentials, endpoint, and model catalog. Each still appears as its own picker in the UI
+with its own models and configuration hint. Adding a vendor is one table entry plus its id
+in `ProviderId`; `buildRegistry()` throws at import if you add one without the other.
+
+Unconfigured providers render disabled with the reason rather than failing mid-run, and an
+explicitly requested provider that isn't configured is a hard error — silently running on a
+different model would make results impossible to interpret.
+
+> **Gemini is the cheapest hosted option.** The API has a real free tier — no card, no
+> expiration — with a meaningful daily request quota, independent of any Google
+> subscription. Two caveats: enabling billing on a Google Cloud project *removes* the free
+> tier for that project, and free-tier prompts may be used for model training. Use a paid
+> project or Vertex for anything beyond evaluation, since this platform handles real
+> contract terms.
+
+**One system prompt, injected everywhere.** `src/lib/agents/system-prompt.ts` holds the
+platform preamble — domain context, grounding rules, output style, and boundaries. The
+runtime is the only path to a provider and it always prepends this text, so a workflow can
+append a role but can never opt out. It sits at the front of the prompt, which also makes it
+the cacheable prefix.
+
+**Tools are the service layer.** Each tool in `src/lib/agents/tools/` wraps an existing
+service function, so agents obey the same business rules as the UI. Tool failures return to
+the model as error results rather than exceptions — a bad argument costs one turn, not the
+run. Read-only tools run concurrently; writes are serialized.
+
+**Workflows** (`src/lib/agents/workflows.ts`) are named configurations — tool allowlist, role
+instructions, step budget:
+
+| Workflow | Does |
+|----------|------|
+| `partnership-analyst` | Answers portfolio questions from live data |
+| `risk-audit` | Sweeps for at-risk/missed obligations, proposes make-goods |
+| `recap-writer` | Builds an evidence-backed recap and persists it |
+| `fulfillment-updater` | Reconciles records against evidence, applies approved changes |
+| `contract-intake` | Reads an uploaded contract, proposes deliverables |
+
+Runs stream over SSE so tool calls appear as they happen. Hitting the step limit triggers one
+final tool-free call, and the run is reported `incomplete` — never a silent `succeeded`.
+
+### Guardrails
+
+| Risk | Mitigation |
+|------|-----------|
+| Prompt injection via an uploaded file | A workflow gets `read_attachment` **or** write tools, never both — an injected instruction has nothing to reach for. Enforced as an invariant by `npm run smoke:agent`, not just by prompt wording. |
+| Reading arbitrary bucket objects | Run attachments must reference a key under the agent-upload prefix, so a run can only read something uploaded for a run. |
+| Binary files quoted as contract text | `read_attachment` detects binary payloads and refuses, instead of handing the model decoded noise it would quote as clauses. |
+| Runaway provider spend | Requested models must be ones the provider advertises; concurrent runs are capped (`AGENT_MAX_CONCURRENT_RUNS`, default 4); every workflow has a step budget. |
+| Cancellation racing a mutation | The abort signal is re-checked after each model call and between tool calls, so a cancel cannot let queued writes through. |
+| Injection via attachment *metadata* | Attachments are listed in the system prompt by server-generated ordinal and byte size — never by filename. No character filter can strip instruction-shaped language while leaving a readable name, so caller text simply never reaches the system role; the real filename comes back through a tool result. A workflow without `read_attachment` refuses attachments outright. |
+| Torn reads of the JSON store | `saveDb` writes to a temp file and renames. Without this, a reader hitting a half-written file would see invalid JSON — which the store treats as corruption and reseeds from, turning a race into total data loss. |
+
+Two limits are known and deliberately not papered over:
+
+> **Authentication and tenancy.** No route in this app has an auth boundary —
+> that predates this change and is a property of the demo, not something
+> introduced by the agent layer. But agents raise the stakes, since some
+> workflows write. Before any real deployment: authenticate every route, scope
+> runs, attachments, and tool operations to a team, and replace the
+> process-local concurrency cap with per-user quotas.
+
+> **Concurrent writes are last-writer-wins.** The atomic rename above removes the
+> torn-file hazard, but it does not serialize snapshots: two processes can each
+> read version N, mutate different records, and the second rename silently drops
+> the first change. Every `getDb`/`saveDb` pair in the app has always had this
+> property — a whole-file JSON store cannot avoid it without cross-process
+> locking. The concurrency cap is per-process for the same reason. The fix is a
+> real database, which `db.ts`'s repository-shaped access is designed to make a
+> localized change.
+
+### File uploads
+
+`src/lib/storage/` abstracts uploads behind a `Storage` interface with two drivers: **S3**
+(used automatically when `S3_BUCKET` is set) and local disk (the zero-config default).
+Callers only ever handle opaque keys. The bucket stays private — reads are served as
+short-lived presigned URLs via `/api/files/[...path]`, and `POST /api/uploads?presign=1`
+returns a presigned PUT so large files never transit the app server.
+
+---
+
 ## 🗂️ Project structure
 
 ```
@@ -100,10 +201,12 @@ src/
     evidence/                    # evidence gallery
     recaps/                      # recap index
     assistant/                   # AI assistant
+    agents/                      # agentic workflow console
     api/                         # REST API (route handlers)
       contracts, contracts/[id], contracts/[id]/recap,
       deliverables, deliverables/[id], extract, evidence,
-      assistant, dashboard, sponsors, files/[name], reset
+      assistant, dashboard, sponsors, files/[...path], reset,
+      agents, agents/runs, agents/runs/[id], agents/runs/stream, uploads
   components/
     AppShell.tsx                 # sidebar + topbar shell
     DeliverableModal, EvidenceModal, EvidenceThumb
@@ -118,7 +221,21 @@ src/
     extractor.ts                 # ContractExtractor abstraction + mock
     assistant.ts                 # AssistantEngine abstraction + rule engine
     api-client.ts                # typed client fetch wrapper
-scripts/seed.ts                  # reset/seed CLI
+    agents/
+      types.ts                   # provider-agnostic agent contracts
+      system-prompt.ts           # platform prompt injected into every agent
+      runtime.ts                 # the tool-calling loop
+      workflows.ts               # named agent configurations
+      request.ts                 # HTTP request validation
+      store.ts                   # run persistence
+      providers/                 # anthropic.ts (own protocol)
+                                 #   + openai-compatible.ts (shared transport)
+                                 #   + catalog.ts (openai · gemini · local · custom)
+      tools/                     # domain tools over the service layer
+    storage/                     # Storage interface · s3 · local disk
+scripts/
+  seed.ts                        # reset/seed CLI
+  smoke-agent.ts                 # end-to-end runtime test against a stub model
 ```
 
 ### Data model
@@ -146,8 +263,13 @@ Postgres/Prisma a localized change.
 | `GET` `POST` | `/api/evidence` | List / upload evidence (multipart) |
 | `POST` | `/api/assistant` | Ask the assistant a question |
 | `GET` | `/api/sponsors` | List sponsors |
-| `GET` | `/api/files/:name` | Serve an uploaded evidence file |
+| `GET` | `/api/files/*` | Serve an uploaded file (redirects to a presigned URL on S3) |
 | `POST` | `/api/reset` | Restore seed data |
+| `GET` | `/api/agents` | Available providers, models, and workflows |
+| `GET` `POST` | `/api/agents/runs` | List recent runs / start a run (blocking) |
+| `GET` | `/api/agents/runs/:id` | One run with its full event log |
+| `POST` | `/api/agents/runs/stream` | Start a run, stream events over SSE |
+| `POST` | `/api/uploads` | Upload a run attachment (`?presign=1` for a direct S3 PUT) |
 
 ---
 
